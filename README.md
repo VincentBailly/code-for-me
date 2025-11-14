@@ -6,6 +6,8 @@ This sample VS Code extension demonstrates how to send user prompts to a languag
 
 - Built-in chat participant (`@llm-workbench`) so you can reuse the VS Code Chat surface with no extra wiring.
 - Automatically uses the first VS Code-managed chat model that’s available—no extra selection UI needed.
+- Every request is prefaced with a Vingent-specific system prompt so the model answers with concise, workspace-aware guidance.
+- Each prompt is handled independently—chat history is intentionally ignored to keep replies focused on the latest request.
 
 ## Requirements
 
