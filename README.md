@@ -4,11 +4,8 @@ This sample VS Code extension demonstrates how to send user prompts to a languag
 
 ## Features
 
-- Command palette entry **LLM: Send Prompt** (`llm.sendPrompt`).
-- Command palette entry **LLM: Select Model** (`llm.selectModel`) to pick the default VS Code-hosted model.
-- Collects a prompt from the user and forwards it to the first available language model selected via `vscode.lm.selectChatModels`.
-- Streams the assistant response into a dedicated output channel so you can keep the full conversation transcript.
-- Provides straightforward error handling when no models are available or if the request fails for quota/consent reasons.
+- Built-in chat participant (`@llm-workbench`) so you can reuse the VS Code Chat surface with no extra wiring.
+- Automatically uses the first VS Code-managed chat model that’s available—no extra selection UI needed.
 
 ## Requirements
 
@@ -50,9 +47,8 @@ npm run install:vsix
 ## Usage
 
 1. Press `F5` to launch a new Extension Development Host.
-2. (Optional) Run **LLM: Select Model** to choose which VS Code-provided model should be used by default.
-3. Open the command palette and run **LLM: Send Prompt**.
-4. Enter any message; the extension selects your preferred model (or prompts you to choose) via `vscode.lm` and streams the answer to the **LLM Chat Output** channel.
+2. Open the Chat view, mention `@llm-workbench`, and start asking questions.
+3. The extension streams responses directly in the Chat panel using whichever built-in model is available.
 
 ## License
 

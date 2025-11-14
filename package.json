@@ -2,7 +2,7 @@
   "name": "vscode-lm-client",
   "displayName": "VS Code LLM Client",
   "description": "Sample VS Code extension that sends prompts to built-in language models via the vscode.lm API.",
-  "version": "0.0.2",
+  "version": "0.4.0",
   "publisher": "vingent",
   "license": "MIT",
   "repository": {
@@ -17,16 +17,13 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
+    "chatParticipants": [
       {
-        "command": "llm.sendPrompt",
-        "title": "LLM: Send Prompt",
-        "category": "LLM"
-      },
-      {
-        "command": "llm.selectModel",
-        "title": "LLM: Select Model",
-        "category": "LLM"
+        "id": "llmWorkbench.participant",
+        "name": "llm-workbench",
+        "fullName": "LLM Workbench",
+        "description": "Ask the LLM Workbench assistant to run prompts through VS Code's language model API.",
+        "isSticky": true
       }
     ]
   },
