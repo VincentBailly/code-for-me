@@ -1,12 +1,18 @@
 import { spawn } from 'child_process';
+import { promises } from 'dns';
 import * as vscode from 'vscode';
+
 
 export function activate(context: vscode.ExtensionContext) {
 	const chatParticipant = vscode.chat.createChatParticipant('vingent.participant', async (request, _chatContext, stream, token) => {
-		try {
+		let i = 0;
+		async function agentLoop(initialPrompt: string): Promise<string> {
+			if (i++ > 5) {
+				return 'I have reached the maximum number of iterations.';
+			}
 			const messages = [
 				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'system'),
-				vscode.LanguageModelChatMessage.User(request.prompt)
+				vscode.LanguageModelChatMessage.User(initialPrompt)
 			];
 
 			const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
@@ -33,7 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const messages2 = [
 				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'system'),
-				vscode.LanguageModelChatMessage.User(request.prompt),
+				vscode.LanguageModelChatMessage.User(initialPrompt),
 				vscode.LanguageModelChatMessage.Assistant(aggregatedResponse),
 				vscode.LanguageModelChatMessage.User(rendered),
 				vscode.LanguageModelChatMessage.User(reminderOfWhatsNext(), 'user')
@@ -44,14 +50,26 @@ export function activate(context: vscode.ExtensionContext) {
 				justification: 'Answer chat prompts via the Vingent participant.'
 			}, token);
 
+			const finalAnswerPrefix = 'FINAL ANSWER: ';
+			let finalAnswer = '';
 			for await (const fragment of chatResponse2.text) {
-				stream.markdown(fragment);
+				finalAnswer += fragment;
 			}
 
-		} catch (error: unknown) {
-			stream.markdown(`$(error) ${getErrorMessage(error)}`);
-			handleLanguageModelError(error);
+			if (finalAnswer.startsWith(finalAnswerPrefix)) {
+				const answerContent = finalAnswer.slice(finalAnswerPrefix.length).trim();
+				return answerContent
+			} else {
+				// Not a final answer, repeat the loop
+				return agentLoop(finalAnswer);
+			}
+
 		}
+		const response = await agentLoop(request.prompt)
+
+		stream.markdown(response);
+
+
 	});
 	chatParticipant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'chat.svg');
 
@@ -62,7 +80,8 @@ function reminderOfWhatsNext(): string {
 	return [
 		'<reminder>',
 		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated a brand new user prompt and the cycle will repeat.",
-		"If you are providing not providing a final answer, make sure that you provide an english prompt and not code.",
+		"If you are not providing a final answer, make sure that you provide an english prompt and not code.",
+		"Keep in mind that your prompt will be the only context available to the next loop, so if you need to remember anything, including the original question or goals, make sure you express it in the prompt.",
 		'</reminder>'
 	].join(' ');
 }
