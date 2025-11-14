@@ -1,13 +1,13 @@
 import * as vscode from 'vscode';
 
 export function activate(context: vscode.ExtensionContext) {
-	const chatParticipant = vscode.chat.createChatParticipant('llmWorkbench.participant', async (request, chatContext, stream, token) => {
+	const chatParticipant = vscode.chat.createChatParticipant('vingent.participant', async (request, chatContext, stream, token) => {
 		try {
 			const messages = buildMessagesFromChatContext(chatContext);
 			messages.push(vscode.LanguageModelChatMessage.User(request.prompt));
 
 			const chatResponse = await request.model.sendRequest(messages, {
-				justification: 'Answer chat prompts via the LLM Workbench participant.'
+				justification: 'Answer chat prompts via the Vingent participant.'
 			}, token);
 
 			for await (const fragment of chatResponse.text) {

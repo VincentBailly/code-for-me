@@ -19,10 +19,10 @@
   "contributes": {
     "chatParticipants": [
       {
-        "id": "llmWorkbench.participant",
-        "name": "llm-workbench",
-        "fullName": "LLM Workbench",
-        "description": "Ask the LLM Workbench assistant to run prompts through VS Code's language model API.",
+        "id": "vingent.participant",
+        "name": "vingent",
+        "fullName": "Vingent",
+        "description": "Ask the Vingent assistant to run prompts through VS Code's language model API.",
         "isSticky": true
       }
     ]
