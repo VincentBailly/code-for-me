@@ -79,11 +79,12 @@ export function activate(context: vscode.ExtensionContext) {
 function reminderOfWhatsNext(): string {
 	return [
 		'<reminder>',
-		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated a brand new user prompt and the cycle will repeat.",
-		"If you are not providing a final answer, make sure that you provide an english prompt and not code.",
-		"Keep in mind that your prompt will be the only context available to the next loop, so if you need to remember anything, including the original question or goals, make sure you express it in the prompt.",
+		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated a brand new user prompt and the cycle will repeat from the start.",
+		"If you are not providing a final answer, make sure that you provide an english prompt which can contain code snippets if needed.",
+		"Keep in mind that your prompt will be the only context available to the next loop iteration, so if you need to remember anything, including the original question or goals, make sure you express it in the prompt. An example of things you might want to remember are the original question or any constraints or goals you might have been given.",
 		"This minmal agent loop is very minimal, there is no possiblity to get any input from the user past the past the first prompt.",
 		"Each agent loop iteration starts fresh with a new context, the prompt provided by the user, or by the previous response is all the context you have and your next prompt will be the only context for the next iteration.",
+		"For as long as the interaction goes, every engligh prompt should be followed by a code snippet that will be executed in the workspace context and every code snippet should be followed by an english prompt",
 		'</reminder>'
 	].join(' ');
 }
