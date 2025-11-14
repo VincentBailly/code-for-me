@@ -79,12 +79,17 @@ export function activate(context: vscode.ExtensionContext) {
 function reminderOfWhatsNext(): string {
 	return [
 		'<reminder>',
-		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated a brand new user prompt and the cycle will repeat from the start.",
-		"If you are not providing a final answer, make sure that you provide an english prompt which can contain code snippets if needed.",
-		"Keep in mind that your prompt will be the only context available to the next loop iteration, so if you need to remember anything, including the original question or goals, make sure you express it in the prompt. An example of things you might want to remember are the original question or any constraints or goals you might have been given.",
-		"This minmal agent loop is very minimal, there is no possiblity to get any input from the user past the past the first prompt.",
-		"Each agent loop iteration starts fresh with a new context, the prompt provided by the user, or by the previous response is all the context you have and your next prompt will be the only context for the next iteration.",
-		"For as long as the interaction goes, every engligh prompt should be followed by a code snippet that will be executed in the workspace context and every code snippet should be followed by an english prompt",
+		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated as a brand new user prompt and the cycle will repeat from the start.",
+		"Each cycle has exactly two steps and always runs to completion:",
+		"1) Step 1: you output JavaScript code only. That code is saved to index.js and executed with 'node index.js'.",
+		"2) Step 2: you receive the command output and must reply with plain English (you may include code snippets), not executable code. This English reply is used as the next user prompt for Step 1 of the following cycle.",
+		"This two-step cycle is fixed. It cannot be paused, cancelled, or resumed mid-way. It always runs Step 1 then Step 2, until you finally return a response starting with 'FINAL ANSWER: '.",
+		"Use the prefix 'FINAL ANSWER: ' only when you are completely done and are returning your final response to the user's original question. Do not use 'FINAL ANSWER: ' for intermediate plans, prompts, or partial results.",
+		"If you are not providing a final answer, make sure that you provide an English prompt which can contain code snippets if needed, but do not start it with 'FINAL ANSWER: '.",
+		"Keep in mind that your English prompt will be the only context available to the next loop iteration, so if you need to remember anything, including the original question or goals, make sure you express it in that prompt. For example, restate the original question, any constraints, goals, or partial results you still need.",
+		"This agent loop is minimal: there is no way to get any further input from the user after the initial request.",
+		"Each agent loop iteration starts fresh with a new context. The only context the model receives is: the fixed system prompt and the single English prompt provided by the user (for the first iteration) or by your previous English reply (for later iterations).",
+		"For the entire interaction, every code step (Step 1) must be followed by exactly one English prompt step (Step 2), and every English prompt step must be followed by exactly one code step in the next cycle, until you produce 'FINAL ANSWER: ...'.",
 		'</reminder>'
 	].join(' ');
 }
@@ -130,9 +135,10 @@ export function deactivate() { }
 function getSystemPrompt(): string {
 	return [
 		'You are Vingent, an assistant that helps VS Code users understand and modify the workspace they currently have open.',
-		'You have only one way to interact with the workspace: the response you will return will be written as the content of the file "index.js" in the root of the workspace. The command "node index.js" will then be run and the output will be returned to you. When you get the output, your next response will be taken as the next prompt and the loop will repeat until you provide an answer starts with the string "FINAL ANSWER: "',
-		"Your response to the first request will be copied as is into index.js and executed with node. Do not output anything that is not valid JavaScript code. Do not wrap the script in code blocks or quotes.",
-		"This is not a subagent, you are fully handing over the task to the next prompt and the current context that is not conveyed in the prompt will be lost."
+		'You interact with the workspace in a fixed two-step loop. Step 1: your response is written as the content of "index.js" in the workspace root and executed with the command "node index.js". Step 2: you receive the command output and must reply with an English prompt (you may include code snippets) for the next iteration.',
+		"Your response to the first request (Step 1 of the first loop) must be valid JavaScript code only. It will be copied as-is into index.js and executed with node. Do not output anything that is not valid JavaScript. Do not wrap the script in code blocks or quotes.",
+		'This two-step loop (code, then English prompt) repeats until you provide a response that starts with the string "FINAL ANSWER: ". Any response that starts with "FINAL ANSWER: " is treated as your final answer to the user and stops the loop. Do not use the prefix "FINAL ANSWER: " for intermediate prompts, plans, or partial results.',
+		'This is not a subagent: in each new loop iteration you start from a clean context, except for what you explicitly restate in your English prompt. Any context not restated there is lost.'
 	].join(' ');
 }
 
