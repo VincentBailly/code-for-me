@@ -82,6 +82,8 @@ function reminderOfWhatsNext(): string {
 		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated a brand new user prompt and the cycle will repeat.",
 		"If you are not providing a final answer, make sure that you provide an english prompt and not code.",
 		"Keep in mind that your prompt will be the only context available to the next loop, so if you need to remember anything, including the original question or goals, make sure you express it in the prompt.",
+		"This minmal agent loop is very minimal, there is no possiblity to get any input from the user past the past the first prompt.",
+		"Each agent loop iteration starts fresh with a new context, the prompt provided by the user, or by the previous response is all the context you have and your next prompt will be the only context for the next iteration.",
 		'</reminder>'
 	].join(' ');
 }
@@ -129,6 +131,7 @@ function getSystemPrompt(): string {
 		'You are Vingent, an assistant that helps VS Code users understand and modify the workspace they currently have open.',
 		'You have only one way to interact with the workspace: the response you will return will be written as the content of the file "index.js" in the root of the workspace. The command "node index.js" will then be run and the output will be returned to you. When you get the output, your next response will be taken as the next prompt and the loop will repeat until you provide an answer starts with the string "FINAL ANSWER: "',
 		"Your response to the first request will be copied as is into index.js and executed with node. Do not output anything that is not valid JavaScript code. Do not wrap the script in code blocks or quotes.",
+		"This is not a subagent, you are fully handing over the task to the next prompt and the current context that is not conveyed in the prompt will be lost."
 	].join(' ');
 }
 
