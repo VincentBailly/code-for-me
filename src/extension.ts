@@ -35,7 +35,9 @@ export function activate(context: vscode.ExtensionContext) {
 				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'system'),
 				vscode.LanguageModelChatMessage.User(request.prompt),
 				vscode.LanguageModelChatMessage.Assistant(aggregatedResponse),
-				vscode.LanguageModelChatMessage.User(rendered)
+				vscode.LanguageModelChatMessage.User(rendered),
+				vscode.LanguageModelChatMessage.User(reminderOfWhatsNext(), 'user')
+
 			];
 
 			const chatResponse2 = await chatRequestWithModel.model.sendRequest(messages2, {
@@ -56,6 +58,15 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(chatParticipant);
 }
 
+function reminderOfWhatsNext(): string {
+	return [
+		'<reminder>',
+		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated a brand new user prompt and the cycle will repeat.",
+		"If you are providing not providing a final answer, make sure that you provide an english prompt and not code.",
+		'</reminder>'
+	].join(' ');
+}
+
 function renderCommandResult(output: string, errorOutput: string, exitCode: number): string {
 	let result = `**Command executed with exit code ${exitCode}.**\n\n`;
 
@@ -72,7 +83,7 @@ function renderCommandResult(output: string, errorOutput: string, exitCode: numb
 
 function runScriptAndGetOutput(scriptUri: vscode.Uri): Promise<{ output: string, errorOutput: string, exitCode: number }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn('node', [scriptUri.fsPath]);
+		const child = spawn('node', [scriptUri.fsPath,], { cwd: vscode.workspace.rootPath });
 		let output = '';
 		let errorOutput = '';
 
