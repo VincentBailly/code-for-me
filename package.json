@@ -1,0 +1,53 @@
+{
+  "name": "vscode-lm-client",
+  "displayName": "VS Code LLM Client",
+  "description": "Sample VS Code extension that sends prompts to built-in language models via the vscode.lm API.",
+  "version": "0.0.2",
+  "publisher": "vingent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://example.com/vingent/vscode-lm-client.git"
+  },
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "llm.sendPrompt",
+        "title": "LLM: Send Prompt",
+        "category": "LLM"
+      },
+      {
+        "command": "llm.selectModel",
+        "title": "LLM: Select Model",
+        "category": "LLM"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node ./out/test/runTest.js",
+    "package:vsix": "vsce package",
+    "install:vsix": "npm run package:vsix && node ./scripts/install-vsix.js"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.93.0",
+    "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^3.1.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.7.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,7 @@
+out/test/**
+src/**
+.vscode/**
+.git/**
+node_modules/**
+README.md
+CHANGELOG.md
