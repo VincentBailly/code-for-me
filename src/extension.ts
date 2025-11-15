@@ -6,6 +6,9 @@ import * as vscode from 'vscode';
 export function activate(context: vscode.ExtensionContext) {
 	const chatParticipant = vscode.chat.createChatParticipant('vingent.participant', async (request, _chatContext, stream, token) => {
 		let i = 0;
+		const workspaceUri = getRequiredWorkspaceUri();
+		const interactionLogs: string[] = [];
+		interactionLogs.push(formatLogSection('Initial Prompt', request.prompt));
 		async function agentLoop(initialPrompt: string): Promise<string> {
 			if (i++ > 5) {
 				return 'I have reached the maximum number of iterations.';
@@ -24,18 +27,15 @@ export function activate(context: vscode.ExtensionContext) {
 			for await (const fragment of chatResponse.text) {
 				aggregatedResponse += fragment;
 			}
+			interactionLogs.push(formatCodeSection(`Iteration ${i} - Model Code Response`, aggregatedResponse));
 			// write the content of the response to index.js at the root of the workspace
-			const workspaceFolders = vscode.workspace.workspaceFolders;
-			if (!workspaceFolders || workspaceFolders.length === 0) {
-				throw new Error('No workspace folder is open.');
-			}
-			const workspaceUri = workspaceFolders[0].uri;
 			const indexJsUri = vscode.Uri.joinPath(workspaceUri, 'index.js');
 			const encoder = new TextEncoder();
 			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(aggregatedResponse));
 
 			const { output, errorOutput, exitCode } = await runScriptAndGetOutput(indexJsUri);
 			const rendered = renderCommandResult(output, errorOutput, exitCode);
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Command Result`, rendered));
 
 			const messages2 = [
 				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'system'),
@@ -55,6 +55,7 @@ export function activate(context: vscode.ExtensionContext) {
 			for await (const fragment of chatResponse2.text) {
 				finalAnswer += fragment;
 			}
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Model English Response`, finalAnswer));
 
 			if (finalAnswer.startsWith(finalAnswerPrefix)) {
 				const answerContent = finalAnswer.slice(finalAnswerPrefix.length).trim();
@@ -66,6 +67,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 		}
 		const response = await agentLoop(request.prompt)
+
+		try {
+			await writeInteractionLogs(workspaceUri, interactionLogs);
+		} catch (error) {
+			vscode.window.showErrorMessage(`Failed to write Vingent logs: ${getErrorMessage(error)}`);
+		}
 
 		stream.markdown(response);
 
@@ -131,6 +138,29 @@ function runScriptAndGetOutput(scriptUri: vscode.Uri): Promise<{ output: string,
 	});
 }
 export function deactivate() { }
+
+function getRequiredWorkspaceUri(): vscode.Uri {
+	const workspaceFolders = vscode.workspace.workspaceFolders;
+	if (!workspaceFolders || workspaceFolders.length === 0) {
+		throw new Error('No workspace folder is open.');
+	}
+	return workspaceFolders[0].uri;
+}
+
+async function writeInteractionLogs(workspaceUri: vscode.Uri, logs: string[]): Promise<void> {
+	const logUri = vscode.Uri.joinPath(workspaceUri, 'vingent_logs.md');
+	const encoder = new TextEncoder();
+	const content = logs.join('\n\n');
+	await vscode.workspace.fs.writeFile(logUri, encoder.encode(content));
+}
+
+function formatLogSection(title: string, content: string): string {
+	return `## ${title}\n\n${content}`;
+}
+
+function formatCodeSection(title: string, code: string): string {
+	return formatLogSection(title, ['```javascript', code, '```'].join('\n'));
+}
 
 function getSystemPrompt(): string {
 	return [
