@@ -14,8 +14,8 @@ export function activate(context: vscode.ExtensionContext) {
 				return 'I have reached the maximum number of iterations.';
 			}
 			const messages = [
-				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'system'),
-				vscode.LanguageModelChatMessage.User(initialPrompt)
+				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'systemPrompt'),
+				vscode.LanguageModelChatMessage.User(initialPrompt, 'initialPrompt')
 			];
 
 			const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
@@ -38,11 +38,11 @@ export function activate(context: vscode.ExtensionContext) {
 			interactionLogs.push(formatLogSection(`Iteration ${i} - Command Result`, rendered));
 
 			const messages2 = [
-				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'system'),
-				vscode.LanguageModelChatMessage.User(initialPrompt),
-				vscode.LanguageModelChatMessage.Assistant(aggregatedResponse),
-				vscode.LanguageModelChatMessage.User(rendered),
-				vscode.LanguageModelChatMessage.User(reminderOfWhatsNext(), 'user')
+				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'systemPrompt'),
+				vscode.LanguageModelChatMessage.User(initialPrompt, 'initialPrompt'),
+				vscode.LanguageModelChatMessage.Assistant(aggregatedResponse, 'codeResponse'),
+				vscode.LanguageModelChatMessage.User(rendered, 'commandResult'),
+				vscode.LanguageModelChatMessage.User(reminderOfWhatsNext(), 'reminderOfWhatsNext')
 
 			];
 
@@ -84,21 +84,13 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 function reminderOfWhatsNext(): string {
-	return [
-		'<reminder>',
-		"Your next response either starts with the string 'FINAL ANSWER: ' followed by your final answer to the user's original question, or it will be treated as a brand new user prompt and the cycle will repeat from the start.",
-		"Each cycle has exactly two steps and always runs to completion:",
-		"1) Step 1: you output JavaScript code only. That code is saved to index.js and executed with 'node index.js'.",
-		"2) Step 2: you receive the command output and must reply with plain English (you may include code snippets), not executable code. This English reply is used as the next user prompt for Step 1 of the following cycle.",
-		"This two-step cycle is fixed. It cannot be paused, cancelled, or resumed mid-way. It always runs Step 1 then Step 2, until you finally return a response starting with 'FINAL ANSWER: '.",
-		"Use the prefix 'FINAL ANSWER: ' only when you are completely done and are returning your final response to the user's original question. Do not use 'FINAL ANSWER: ' for intermediate plans, prompts, or partial results.",
-		"If you are not providing a final answer, make sure that you provide an English prompt which can contain code snippets if needed, but do not start it with 'FINAL ANSWER: '.",
-		"Keep in mind that your English prompt will be the only context available to the next loop iteration, so if you need to remember anything, including the original question or goals, make sure you express it in that prompt. For example, restate the original question, any constraints, goals, or partial results you still need.",
-		"This agent loop is minimal: there is no way to get any further input from the user after the initial request.",
-		"Each agent loop iteration starts fresh with a new context. The only context the model receives is: the fixed system prompt and the single English prompt provided by the user (for the first iteration) or by your previous English reply (for later iterations).",
-		"For the entire interaction, every code step (Step 1) must be followed by exactly one English prompt step (Step 2), and every English prompt step must be followed by exactly one code step in the next cycle, until you produce 'FINAL ANSWER: ...'.",
-		'</reminder>'
-	].join(' ');
+	return `
+	Are you done with the task? If so, respond with 'FINAL ANSWER: ' followed by your final answer to the user's original question. This message will be detected as a final answer and displayed to the user.
+
+	If you are not done, it's okay, you can iterate some more. To prevent keeping useless information in memory, we are going to wipe all context after your next response, including the initial user request. Your next response will become the initial prompt given. Give all the information and instructions that you will need to fulfill the user's original request. Your prompt can contain as much context as you judge useful, including code snippets, file paths, explanations, it can even be something that only you can make sense of and that has emojis or non-english characters if you think it will help get a better result.
+
+	Your response will be fed back to you as is, but without any other context or history. The user will not see your prompt response unless it is a final answer. There is not mechanism for you to ask aditional information to the user or give intermediate feedback.
+`;
 }
 
 function renderCommandResult(output: string, errorOutput: string, exitCode: number): string {
@@ -163,13 +155,44 @@ function formatCodeSection(title: string, code: string): string {
 }
 
 function getSystemPrompt(): string {
-	return [
-		'You are Vingent, an assistant that helps VS Code users understand and modify the workspace they currently have open.',
-		'You interact with the workspace in a fixed two-step loop. Step 1: your response is written as the content of "index.js" in the workspace root and executed with the command "node index.js". Step 2: you receive the command output and must reply with an English prompt (you may include code snippets) for the next iteration.',
-		"Your response to the first request (Step 1 of the first loop) must be valid JavaScript code only. It will be copied as-is into index.js and executed with node. Do not output anything that is not valid JavaScript. Do not wrap the script in code blocks or quotes.",
-		'This two-step loop (code, then English prompt) repeats until you provide a response that starts with the string "FINAL ANSWER: ". Any response that starts with "FINAL ANSWER: " is treated as your final answer to the user and stops the loop. Do not use the prefix "FINAL ANSWER: " for intermediate prompts, plans, or partial results.',
-		'This is not a subagent: in each new loop iteration you start from a clean context, except for what you explicitly restate in your English prompt. Any context not restated there is lost.'
-	].join(' ');
+	return `
+		You are Vingent, an assistant that helps VS Code users understand and modify the workspace they currently have open.
+
+		You interact with the workspace in a fixed two-step loop. Each step of the loop consists of asking the model (you) to respond to a prompt.
+
+		- The first prompt will contain the description of the task and possibly some extra context. Your response to this prompt must be valid nodejs code, unquoted.
+		- The second prompt but a copy of the previous prompt, to which is added your previous response (the code), and the result of executing that code (standard output, error output, and exit code). Your response to this prompt can be treated in two different ways:
+			- If your response starts with the string "FINAL ANSWER: ", then everything after that prefix is considered your final answer to the user. This will be displayed to the user as is, and the loop ends.
+			- Otherwise, your response is treated as a new prompt for the next iteration of the loop, exactly the same way as if the user had provided it as the initial prompt.
+
+		Here is some pseudo-code describing the loop:
+
+		\`\`\`javascript
+		function agentLoop(initialPrompt) {
+			const codeResponse = model.sendRequest([
+				systemPrompt,
+				initialPrompt
+			])
+
+			const codeOutput = runScriptAndGetOutput(codeResponse);
+			const secondResponse = model.sendRequest([
+				systemPrompt,
+				initialPrompt,
+				codeResponse,
+				codeOutput,
+				reminderOfWhatsNext
+			])
+			if (secondResponse.startsWith("FINAL ANSWER: ")) {
+				return secondResponse.slice("FINAL ANSWER: ".length)
+			} else {
+				return agentLoop(secondResponse)
+			}
+ 		}
+		\`\`\`
+
+		You will only be rewarded for the quality of your final answer, there is no need to rush or guess information that you can look up in the next iteration of the loop.
+		If you need more information about the workspace, do not guess it, just provide the code to extract it and use it to build a better prompt with better context for the next iteration.
+`;
 }
 
 function handleLanguageModelError(error: unknown): void {
