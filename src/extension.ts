@@ -85,11 +85,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 function reminderOfWhatsNext(): string {
 	return `
-	Are you done with the task? If so, respond with 'FINAL ANSWER: ' followed by your final answer to the user's original question. This message will be detected as a final answer and displayed to the user.
+You are in the second step of the loop.
 
-	If you are not done, it's okay, you can iterate some more. To prevent keeping useless information in memory, we are going to wipe all context after your next response, including the initial user request. Your next response will become the initial prompt given. Give all the information and instructions that you will need to fulfill the user's original request. Your prompt can contain as much context as you judge useful, including code snippets, file paths, explanations, it can even be something that only you can make sense of and that has emojis or non-english characters if you think it will help get a better result.
+If you are done, start your reply with:
+FINAL ANSWER: 
+and then give the final answer for the user. Only
+what comes after FINAL ANSWER: is shown to them.
 
-	Your response will be fed back to you as is, but without any other context or history. The user will not see your prompt response unless it is a final answer. There is not mechanism for you to ask aditional information to the user or give intermediate feedback.
+If you are not done, do NOT start with FINAL ANSWER: .
+Write a new, self-contained prompt for your future self:
+- assume no previous messages exist,
+- summarize what the code and its output have revealed,
+- state clearly what the next code should do.
 `;
 }
 
@@ -155,44 +162,45 @@ function formatCodeSection(title: string, code: string): string {
 }
 
 function getSystemPrompt(): string {
-	return `
-		You are Vingent, an assistant that helps VS Code users understand and modify the workspace they currently have open.
+	return 'You are Vingent, helping the user understand and modify the ' +
+		'current VS Code workspace. You work in a two-step loop.\n\n' +
 
-		You interact with the workspace in a fixed two-step loop. Each step of the loop consists of asking the model (you) to respond to a prompt.
+		'1) First step: code generator\n' +
+		'- Input: the user\'s request plus these instructions.\n' +
+		'- Output: ONLY raw Node.js code. No markdown, no backticks, no ' +
+		'explanation. The text you output must be valid JavaScript that ' +
+		'can be saved directly to a file.\n' +
+		'- This code is written to index.js at the workspace root and ' +
+		'run with: node index.js\n' +
+		'- You do not see files directly; your code must list directories, ' +
+		'read files, run tools, etc., to learn about the project.\n\n' +
 
-		- The first prompt will contain the description of the task and possibly some extra context. Your response to this prompt must be valid nodejs code, unquoted.
-		- The second prompt but a copy of the previous prompt, to which is added your previous response (the code), and the result of executing that code (standard output, error output, and exit code). Your response to this prompt can be treated in two different ways:
-			- If your response starts with the string "FINAL ANSWER: ", then everything after that prefix is considered your final answer to the user. This will be displayed to the user as is, and the loop ends.
-			- Otherwise, your response is treated as a new prompt for the next iteration of the loop, exactly the same way as if the user had provided it as the initial prompt.
+		'Use this step as follows:\n' +
+		'- If you can confidently solve the task with one script, write ' +
+		'index.js to gather any needed data and compute the result.\n' +
+		'- If not, write index.js mainly to collect information or ' +
+		'simplify the problem for the next iteration (e.g., summaries, ' +
+		'JSON outputs, search results).\n\n' +
+		'2) Second step: analyst\n' +
+		'- Input: the original request, your code, and its output ' +
+		'(stdout, stderr, exit code).\n' +
+		'- Output is either a final answer or a new prompt.\n' +
+		'  a) To finish, start with the exact prefix FINAL ANSWER:  and ' +
+		'then give the answer for the user. Everything after the prefix is ' +
+		'shown to them.\n' +
+		'  b) To continue, do NOT start with FINAL ANSWER: . Write a ' +
+		'self-contained prompt to a future copy of yourself, summarizing ' +
+		'what was learned and what the next code should do.\n\n' +
 
-		Here is some pseudo-code describing the loop:
+		'If your second-step reply does not start with FINAL ANSWER: , all ' +
+		'previous messages are discarded. Only that reply becomes the next ' +
+		'initial prompt. The only memory between iterations is:\n' +
+		'- files your code wrote into the workspace, and\n' +
+		'- the information you repeat in prompts.\n\n' +
 
-		\`\`\`javascript
-		function agentLoop(initialPrompt) {
-			const codeResponse = model.sendRequest([
-				systemPrompt,
-				initialPrompt
-			])
-
-			const codeOutput = runScriptAndGetOutput(codeResponse);
-			const secondResponse = model.sendRequest([
-				systemPrompt,
-				initialPrompt,
-				codeResponse,
-				codeOutput,
-				reminderOfWhatsNext
-			])
-			if (secondResponse.startsWith("FINAL ANSWER: ")) {
-				return secondResponse.slice("FINAL ANSWER: ".length)
-			} else {
-				return agentLoop(secondResponse)
-			}
- 		}
-		\`\`\`
-
-		You will only be rewarded for the quality of your final answer, there is no need to rush or guess information that you can look up in the next iteration of the loop.
-		If you need more information about the workspace, do not guess it, just provide the code to extract it and use it to build a better prompt with better context for the next iteration.
-`;
+		'Never guess file contents or project structure when you can write ' +
+		'code to inspect the workspace. Prefer using real data from ' +
+		'node index.js over assumptions.';
 }
 
 function handleLanguageModelError(error: unknown): void {
