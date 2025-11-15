@@ -1,5 +1,4 @@
 import { spawn } from 'child_process';
-import { promises } from 'dns';
 import * as vscode from 'vscode';
 
 
@@ -9,64 +8,64 @@ export function activate(context: vscode.ExtensionContext) {
 		const workspaceUri = getRequiredWorkspaceUri();
 		const interactionLogs: string[] = [];
 		interactionLogs.push(formatLogSection('Initial Prompt', request.prompt));
-		async function agentLoop(initialPrompt: string): Promise<string> {
+		const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
+		async function agentLoop(taskPrompt: string, savedNotes?: string): Promise<string> {
 			if (i++ > 5) {
 				return 'I have reached the maximum number of iterations.';
 			}
-			const messages = [
-				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'systemPrompt'),
-				vscode.LanguageModelChatMessage.User(initialPrompt, 'initialPrompt')
-			];
 
-			const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
-			const chatResponse = await chatRequestWithModel.model.sendRequest(messages, {
-				justification: 'Answer chat prompts via the Vingent participant.'
-			}, token);
+			const contextSummary = buildContextSummary(taskPrompt, savedNotes);
 
-			let aggregatedResponse = '';
-			for await (const fragment of chatResponse.text) {
-				aggregatedResponse += fragment;
-			}
-			interactionLogs.push(formatCodeSection(`Iteration ${i} - Model Code Response`, aggregatedResponse));
-			// write the content of the response to index.js at the root of the workspace
+			const canCompleteQuestion = `${contextSummary}\n\nQuestion: Can you write a single Node.js script that will gather all required information and at the same time perform every edits needed to fully satisfy the user request right now?\n\nAnswer format: respond with ONLY "YES" or "NO" on a single line. Answer "YES" only if you are really sure you have all you need to make this one-shot script. Do not add any explanation or additional text.`;
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Can Complete Question`, canCompleteQuestion));
+			const canCompleteResponse = await sendModelRequest(chatRequestWithModel.model, canCompleteQuestion, token, 'Assess ability to finish in one script');
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Can Complete Answer`, canCompleteResponse));
+			const canComplete = normalizeYesNo(canCompleteResponse);
+
+			const codeObjective = canComplete === 'YES'
+				? 'Write the Node.js source for index.js that completes the task in one run. It should gather any information it needs and apply all required edits.'
+				: 'Write the Node.js source for index.js that focuses on gathering missing information or taking preparatory actions to make the task easier next iteration. Produce structured output or files the next assistant can rely on.';
+			const codePrompt = `${contextSummary}\n\n${codeObjective}\n\nRules:\n- Output ONLY Node.js code (no backticks, no commentary).\n- Use workspace-relative paths.\n- Remember you cannot read or edit files directly; only this script will execute.\n- Any workspace modifications must be performed by this script (use fs APIs, child_process, etc.).\n- The only information that reaches the next step is this script plus its stdout/stderr, so print any file contents or summaries you want preserved.\n- Print concise progress updates if helpful.`;
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Code Prompt`, codePrompt));
+			const rawCodeResponse = await sendModelRequest(chatRequestWithModel.model, codePrompt, token, 'Generate Node.js workspace script');
+			const sanitizedCode = stripCodeFences(rawCodeResponse);
+			interactionLogs.push(formatCodeSection(`Iteration ${i} - Generated Code`, sanitizedCode));
 			const indexJsUri = vscode.Uri.joinPath(workspaceUri, 'index.js');
 			const encoder = new TextEncoder();
-			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(aggregatedResponse));
+			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(sanitizedCode));
 
 			const { output, errorOutput, exitCode } = await runScriptAndGetOutput(indexJsUri);
 			const rendered = renderCommandResult(output, errorOutput, exitCode);
 			interactionLogs.push(formatLogSection(`Iteration ${i} - Command Result`, rendered));
 
-			const messages2 = [
-				vscode.LanguageModelChatMessage.User(getSystemPrompt(), 'systemPrompt'),
-				vscode.LanguageModelChatMessage.User(initialPrompt, 'initialPrompt'),
-				vscode.LanguageModelChatMessage.Assistant(aggregatedResponse, 'codeResponse'),
-				vscode.LanguageModelChatMessage.User(rendered, 'commandResult'),
-				vscode.LanguageModelChatMessage.User(reminderOfWhatsNext(), 'reminderOfWhatsNext')
+			const truncatedCode = truncateForPrompt(sanitizedCode, 4000);
+			const truncatedResult = truncateForPrompt(rendered, 4000);
+			const scriptSection = `<script>\n${truncatedCode}\n</script>`;
+			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
+			const canFinalizeQuestion = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nQuestion: Given these results, have all the necessary file modification been done? If so, are you now able to provide the final answer to the user and consider the task complete? If the answerw to both questions is "yes", respond with "YES", otherwise respond with "NO".\n\nAnswer format: respond with ONLY "YES" or "NO" on a single line. Do not add any explanation or additional text.`;
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Can Finalize Question`, canFinalizeQuestion));
+			const canFinalizeResponse = await sendModelRequest(chatRequestWithModel.model, canFinalizeQuestion, token, 'Assess ability to finalize');
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Can Finalize Answer`, canFinalizeResponse));
+			const canFinalize = normalizeYesNo(canFinalizeResponse);
 
-			];
-
-			const chatResponse2 = await chatRequestWithModel.model.sendRequest(messages2, {
-				justification: 'Answer chat prompts via the Vingent participant.'
-			}, token);
-
-			const finalAnswerPrefix = 'FINAL ANSWER: ';
-			let finalAnswer = '';
-			for await (const fragment of chatResponse2.text) {
-				finalAnswer += fragment;
-			}
-			interactionLogs.push(formatLogSection(`Iteration ${i} - Model English Response`, finalAnswer));
-
-			if (finalAnswer.startsWith(finalAnswerPrefix)) {
-				const answerContent = finalAnswer.slice(finalAnswerPrefix.length).trim();
-				return answerContent
-			} else {
-				// Not a final answer, repeat the loop
-				return agentLoop(finalAnswer);
+			if (canFinalize === 'YES') {
+				const finalAnswerPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nProvide the final response for the user. Clearly explain what the script already did and the current project state. Do not describe hypothetical or unexecuted changes.`;
+				interactionLogs.push(formatLogSection(`Iteration ${i} - Final Answer Prompt`, finalAnswerPrompt));
+				const finalAnswer = await sendModelRequest(chatRequestWithModel.model, finalAnswerPrompt, token, 'Deliver final answer to the user');
+				interactionLogs.push(formatLogSection(`Iteration ${i} - Final Answer Raw`, finalAnswer));
+				return finalAnswer;
 			}
 
+			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nYou cannot finish yet. You are about to be rebooted and will lose all context. The ONLY thing that persists is the text you provide now, which will be handed verbatim to the next assistant. Provide exactly what they should know to continue effectively, including the precise file paths and the file contents or excerpts (inline in the note) that will save them from having to re-read files.`;
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Memory Prompt`, notesPrompt));
+			const notesResponse = await sendModelRequest(chatRequestWithModel.model, notesPrompt, token, 'Capture next-iteration memory');
+			const notesContent = notesResponse.trim();
+			interactionLogs.push(formatLogSection(`Iteration ${i} - Saved Memory`, notesContent));
+			await writeMemoryNotes(workspaceUri, notesContent);
+
+			return agentLoop(taskPrompt, notesContent);
 		}
-		const response = await agentLoop(request.prompt)
+		const response = await agentLoop(request.prompt);
 
 		try {
 			await writeInteractionLogs(workspaceUri, interactionLogs);
@@ -81,23 +80,6 @@ export function activate(context: vscode.ExtensionContext) {
 	chatParticipant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'chat.svg');
 
 	context.subscriptions.push(chatParticipant);
-}
-
-function reminderOfWhatsNext(): string {
-	return `
-You are in the second step of the loop.
-
-If you are done, start your reply with:
-FINAL ANSWER: 
-and then give the final answer for the user. Only
-what comes after FINAL ANSWER: is shown to them.
-
-If you are not done, do NOT start with FINAL ANSWER: .
-Write a new, self-contained prompt for your future self:
-- assume no previous messages exist,
-- summarize what the code and its output have revealed,
-- state clearly what the next code should do.
-`;
 }
 
 function renderCommandResult(output: string, errorOutput: string, exitCode: number): string {
@@ -161,51 +143,57 @@ function formatCodeSection(title: string, code: string): string {
 	return formatLogSection(title, ['```javascript', code, '```'].join('\n'));
 }
 
-function getSystemPrompt(): string {
-	return 'You are Vingent, helping the user understand and modify the ' +
-		'current VS Code workspace. You work in a two-step loop.\n\n' +
-
-		'1) First step: code generator\n' +
-		'- Input: the user\'s request plus these instructions.\n' +
-		'- Output: ONLY raw Node.js code. No markdown, no backticks, no ' +
-		'explanation. The text you output must be valid JavaScript that ' +
-		'can be saved directly to a file.\n' +
-		'- This code is written to index.js at the workspace root and ' +
-		'run with: node index.js\n' +
-		'- You do not see files directly; your code must list directories, ' +
-		'read files, run tools, etc., to learn about the project.\n\n' +
-
-		'Use this step as follows:\n' +
-		'- If you can confidently solve the task with one script, write ' +
-		'index.js to gather any needed data and compute the result.\n' +
-		'- If not, write index.js mainly to collect information or ' +
-		'simplify the problem for the next iteration (e.g., summaries, ' +
-		'JSON outputs, search results).\n\n' +
-		'2) Second step: analyst\n' +
-		'- Input: the original request, your code, and its output ' +
-		'(stdout, stderr, exit code).\n' +
-		'- Output is either a final answer or a new prompt.\n' +
-		'  a) To finish, start with the exact prefix FINAL ANSWER:  and ' +
-		'then give the answer for the user. Everything after the prefix is ' +
-		'shown to them.\n' +
-		'  b) To continue, do NOT start with FINAL ANSWER: . Write a ' +
-		'self-contained prompt to a future copy of yourself, summarizing ' +
-		'what was learned and what the next code should do.\n\n' +
-
-		'If your second-step reply does not start with FINAL ANSWER: , all ' +
-		'previous messages are discarded. Only that reply becomes the next ' +
-		'initial prompt. The only memory between iterations is:\n' +
-		'- files your code wrote into the workspace, and\n' +
-		'- the information you repeat in prompts.\n\n' +
-
-		'Never guess file contents or project structure when you can write ' +
-		'code to inspect the workspace. Prefer using real data from ' +
-		'node index.js over assumptions.';
+function buildContextSummary(taskPrompt: string, notes?: string): string {
+	const sections: string[] = [];
+	sections.push(`<task>\n${taskPrompt.trim()}\n</task>`);
+	if (notes && notes.trim().length > 0) {
+		sections.push(`<notes>\n${notes.trim()}\n</notes>`);
+	}
+	sections.push('<rules>\nYou cannot directly inspect the workspace. The only way to read or edit files is by writing Node.js code that runs as index.js. The next step only receives your script plus its stdout/stderr, so print any file contents or conclusions you want preserved.\n</rules>');
+	return sections.join('\n\n');
 }
 
-function handleLanguageModelError(error: unknown): void {
-	const message = getErrorMessage(error);
-	vscode.window.showErrorMessage(`LLM request failed: ${message}`);
+async function sendModelRequest(model: vscode.LanguageModelChat, prompt: string, token: vscode.CancellationToken, justification: string): Promise<string> {
+	const messages = [
+		vscode.LanguageModelChatMessage.User(prompt, 'prompt')
+	];
+	const response = await model.sendRequest(messages, { justification }, token);
+	let aggregated = '';
+	for await (const fragment of response.text) {
+		aggregated += fragment;
+	}
+	return aggregated;
+}
+
+function normalizeYesNo(response: string): 'YES' | 'NO' {
+	const firstMeaningfulLine = response.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '';
+	const normalized = firstMeaningfulLine.trim().toUpperCase();
+	if (normalized === 'YES' || normalized.startsWith('YES')) {
+		return 'YES';
+	}
+	return 'NO';
+}
+
+function stripCodeFences(text: string): string {
+	const trimmed = text.trim();
+	const fenceMatch = trimmed.match(/^```[a-zA-Z0-9]*\n([\s\S]*?)```$/);
+	if (fenceMatch) {
+		return fenceMatch[1].trim();
+	}
+	return trimmed;
+}
+
+function truncateForPrompt(text: string, maxLength = 4000): string {
+	if (text.length <= maxLength) {
+		return text;
+	}
+	return `${text.slice(0, maxLength)}\n\n...[truncated]`;
+}
+
+async function writeMemoryNotes(workspaceUri: vscode.Uri, content: string): Promise<void> {
+	const memoryUri = vscode.Uri.joinPath(workspaceUri, 'vingent_memory.md');
+	const encoder = new TextEncoder();
+	await vscode.workspace.fs.writeFile(memoryUri, encoder.encode(content));
 }
 
 function getErrorMessage(error: unknown): string {
