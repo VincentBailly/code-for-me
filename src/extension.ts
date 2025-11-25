@@ -6,6 +6,9 @@ import * as vscode from 'vscode';
 
 
 export function activate(context: vscode.ExtensionContext) {
+	const logProvider = new VingentLogProvider();
+	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('vingent-logs', logProvider));
+
 	const chatParticipant = vscode.chat.createChatParticipant('vingent.participant', async (request, _chatContext, stream, token) => {
 		let i = 0;
 		const workspaceUri = getRequiredWorkspaceUri();
@@ -32,6 +35,7 @@ Examples of things you can do:
 - Run commands: child_process.execSync() or spawn
 
 Output ONLY the script (no backticks, no commentary).`;
+			stream.progress('Thinking...');
 			const rawResponse = await sendModelRequest(request.model, agentPrompt, token, 'Agent iteration');
 			const sanitizedResponse = stripCodeFences(rawResponse);
 
@@ -40,12 +44,16 @@ Output ONLY the script (no backticks, no commentary).`;
 			const encoder = new TextEncoder();
 			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(sanitizedResponse));
 
-			const summarizePromise = sendModelRequest(fastModel, `Summarize this script in 5-10 words (what it does, not how):\n\n${truncateForPrompt(sanitizedResponse, 4000)}`, token, 'Summarize script').then(summary => {
-				stream.markdown(`**Iteration ${i}:** ${summary.trim()}\n\n`);
+			const scriptUri = logProvider.addContent(`/iteration-${i}/script.js`, sanitizedResponse);
+
+			const summaryPrompt = `Summarize this script in 5-10 words (what it does, not how):\n\n${truncateForPrompt(sanitizedResponse, 4000)}`;
+			const summarizePromise = sendModelRequest(fastModel, summaryPrompt, token, 'Summarize script').then(summary => {
+				stream.markdown(`**Iteration ${i}:** ${summary.trim()}`);
 			}).catch(() => undefined);
 
 			let commandResult: CommandResult;
 			try {
+				stream.progress('Executing script...');
 				commandResult = await runScriptAndGetOutput(indexJsUri, overlay.cloneUri.fsPath);
 			} finally {
 				await overlay.clearTempScript().catch(() => undefined);
@@ -55,6 +63,13 @@ Output ONLY the script (no backticks, no commentary).`;
 
 			const { output, errorOutput, exitCode } = commandResult;
 			const rendered = renderCommandResult(output, errorOutput, exitCode);
+			const outputUri = logProvider.addContent(`/iteration-${i}/output.txt`, rendered);
+
+			stream.markdown(' (');
+			stream.anchor(scriptUri, 'View Script');
+			stream.markdown(' | ');
+			stream.anchor(outputUri, 'View Output');
+			stream.markdown(')\n\n');
 
 			const truncatedCode = truncateForPrompt(sanitizedResponse, 12000);
 			const truncatedResult = truncateForPrompt(rendered, 12000);
@@ -62,12 +77,18 @@ Output ONLY the script (no backticks, no commentary).`;
 			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
 
 			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. Compacted context for next iteration. CRITICAL: Be very conservative when summarizing. You must preserve ALL file contents that are still relevant for future steps. Do not summarize code if it might be needed later. It is better to keep too much context than too little. Remove only details that are clearly no longer needed (like intermediate script outputs that have been processed).\n2. A final summary for the user if the task is complete.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.`;
+			stream.progress('Updating memory...');
 			const notesResponse = await sendModelRequest(request.model, notesPrompt, token, 'Capture next-iteration memory or finalize');
 			const notesContent = notesResponse.trim();
 
 			if (notesContent.startsWith('FINAL:')) {
 				return notesContent.slice(6).trim();
 			}
+
+			const memoryUri = logProvider.addContent(`/iteration-${i}/memory.md`, notesContent);
+			stream.markdown(' (');
+			stream.anchor(memoryUri, 'View Memory');
+			stream.markdown(')\n\n');
 
 			return agentLoop(taskPrompt, notesContent);
 		}
@@ -339,4 +360,19 @@ function truncateForPrompt(text: string, maxLength = 12000): string {
 		return text;
 	}
 	return `${text.slice(0, maxLength)}\n\n...[truncated]`;
+}
+
+class VingentLogProvider implements vscode.TextDocumentContentProvider {
+	private _documents = new Map<string, string>();
+	onDidChangeEmitter = new vscode.EventEmitter<vscode.Uri>();
+	onDidChange = this.onDidChangeEmitter.event;
+
+	provideTextDocumentContent(uri: vscode.Uri): string {
+		return this._documents.get(uri.path) || 'Content not found';
+	}
+
+	addContent(path: string, content: string): vscode.Uri {
+		this._documents.set(path, content);
+		return vscode.Uri.parse(`vingent-logs:${path}`);
+	}
 }
