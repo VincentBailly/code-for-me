@@ -31,8 +31,8 @@ export function activate(context: vscode.ExtensionContext) {
 			const { output, errorOutput, exitCode } = await runScriptAndGetOutput(indexJsUri);
 			const rendered = renderCommandResult(output, errorOutput, exitCode);
 
-			const truncatedCode = truncateForPrompt(sanitizedCode, 4000);
-			const truncatedResult = truncateForPrompt(rendered, 4000);
+			const truncatedCode = truncateForPrompt(sanitizedCode, 12000);
+			const truncatedResult = truncateForPrompt(rendered, 12000);
 			const scriptSection = `<script>\n${truncatedCode}\n</script>`;
 			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
 			const canFinalizeQuestion = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nQuestion: Given these results, have all the necessary file modification been done? If so, are you now able to provide the final answer to the user and consider the task complete? If the answerw to both questions is "yes", respond with "YES", otherwise respond with "NO".\n\nAnswer format: respond with ONLY "YES" or "NO" on a single line. Do not add any explanation or additional text.`;
@@ -147,7 +147,7 @@ function stripCodeFences(text: string): string {
 	return trimmed;
 }
 
-function truncateForPrompt(text: string, maxLength = 4000): string {
+function truncateForPrompt(text: string, maxLength = 12000): string {
 	if (text.length <= maxLength) {
 		return text;
 	}
