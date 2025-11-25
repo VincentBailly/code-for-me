@@ -18,14 +18,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const contextSummary = buildContextSummary(taskPrompt, savedNotes);
 
-			const canCompleteQuestion = `${contextSummary}\n\nQuestion: Can you write a single Node.js script that will gather all required information and at the same time perform every edits needed to fully satisfy the user request right now?\n\nAnswer format: respond with ONLY "YES" or "NO" on a single line. Answer "YES" only if you are really sure you have all you need to make this one-shot script. Do not add any explanation or additional text.`;
-			const canCompleteResponse = await sendModelRequest(chatRequestWithModel.model, canCompleteQuestion, token, 'Assess ability to finish in one script');
-			const canComplete = normalizeYesNo(canCompleteResponse);
+			// Skip the "can complete" question on the first iteration - we always need to gather info first
+			let canComplete: 'YES' | 'NO' = 'NO';
+			if (savedNotes) {
+				const canCompleteQuestion = `${contextSummary}\n\nQuestion: Can you write a single Node.js script that will gather all required information and at the same time perform every edits needed to fully satisfy the user request right now?\n\nAnswer format: respond with ONLY "YES" or "NO" on a single line. Answer "YES" only if you are really sure you have all you need to make this one-shot script. Do not add any explanation or additional text.`;
+				const canCompleteResponse = await sendModelRequest(chatRequestWithModel.model, canCompleteQuestion, token, 'Assess ability to finish in one script');
+				canComplete = normalizeYesNo(canCompleteResponse);
+			}
 
 			const codeObjective = canComplete === 'YES'
-				? 'Write the Node.js source for index.js that completes the task in one run. It should gather any information it needs and apply all required edits.'
-				: 'Write the Node.js source for index.js that focuses on gathering missing information or taking preparatory actions to make the task easier next iteration. Produce structured output or files the next assistant can rely on.';
-			const codePrompt = `${contextSummary}\n\n${codeObjective}\n\nRules:\n- Output ONLY Node.js code (no backticks, no commentary).\n- Use workspace-relative paths.\n- Remember you cannot read or edit files directly; only this script will execute.\n- Any workspace modifications must be performed by this script (use fs APIs, child_process, etc.).\n- The only information that reaches the next step is this script plus its stdout/stderr, so print any file contents or summaries you want preserved.\n- Print concise progress updates if helpful.`;
+				? 'Write a Node.js script that completes the task in one run. It should gather any information you need and apply all required edits.'
+				: 'Write the Node.js script that focuses on gathering missing information or taking preparatory actions to make the task easier next iteration.';
+			const codePrompt = `${contextSummary}\n\n${codeObjective}\n\nRules:\n- Output ONLY Node.js code (no backticks, no commentary).\n- Use workspace-relative paths.\n- Remember you cannot read or edit files directly; only this script will execute.\n- Any workspace modifications must be performed by this script (use fs APIs, child_process, etc.).`;
 			const rawCodeResponse = await sendModelRequest(chatRequestWithModel.model, codePrompt, token, 'Generate Node.js workspace script');
 			const sanitizedCode = stripCodeFences(rawCodeResponse);
 			const indexJsUri = overlay.indexJsUri;
@@ -56,7 +60,7 @@ export function activate(context: vscode.ExtensionContext) {
 				return finalAnswer;
 			}
 
-			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nYou cannot finish yet. You are about to be rebooted and will lose all context. The ONLY thing that persists is the text you provide now, which will be handed verbatim to the next assistant. Provide exactly what they should know to continue effectively, including the precise file paths and the file contents or excerpts (inline in the note) that will save them from having to re-read files.`;
+			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nWe are now in the process of compacting the context for the next iteration. Please re-write the current chat history, all details that are still relevant should be preserved, including relevant file contents, but details that are not necessary anymore for finishing the task should be omitted. Keep the same chat history structure as the input. You may need to re-write some parts to make sure that the deletion of details does not impact the overall understanding. The next iteration will start only the system prompt and the compacted chat history you provide here. In case of doubt, include more rather than less, never include system prompt or initial user instructions as they will be automatically preserved.`;
 			const notesResponse = await sendModelRequest(chatRequestWithModel.model, notesPrompt, token, 'Capture next-iteration memory');
 			const notesContent = notesResponse.trim();
 
@@ -65,8 +69,43 @@ export function activate(context: vscode.ExtensionContext) {
 		try {
 			const response = await agentLoop(request.prompt);
 			const finalizeResult = await overlay.finalize();
-			const notice = finalizeResult ? `\n\n> Diff saved to \`${finalizeResult.diffRelativePath}\`.` : '';
-			stream.markdown(`${response}${notice}`);
+
+			// Apply changes to the workspace using the copilot_insertEdit tool
+			if (finalizeResult.changes.length > 0) {
+				for (const change of finalizeResult.changes) {
+					const fileUri = vscode.Uri.joinPath(workspaceUri, change.relativePath);
+
+					if (change.type === 'deleted') {
+						const edit = new vscode.WorkspaceEdit();
+						edit.deleteFile(fileUri);
+						await vscode.workspace.applyEdit(edit);
+						stream.markdown(`Deleted \`${change.relativePath}\`\n`);
+					} else {
+						// Use the copilot_insertEdit tool for creates and modifications
+						const toolResult = await vscode.lm.invokeTool('copilot_insertEdit', {
+							input: {
+								explanation: change.type === 'created'
+									? `Create new file ${change.relativePath}`
+									: `Update ${change.relativePath}`,
+								filePath: fileUri.fsPath,
+								code: change.newContent
+							},
+							toolInvocationToken: request.toolInvocationToken
+						}, token);
+
+						// The tool result contains content parts we can examine
+						if (toolResult.content) {
+							for (const part of toolResult.content) {
+								if (part instanceof vscode.LanguageModelTextPart) {
+									stream.markdown(part.value);
+								}
+							}
+						}
+					}
+				}
+			}
+
+			stream.markdown(response);
 		} catch (error) {
 			await overlay.finalize().catch(() => undefined);
 			const message = error instanceof Error ? error.message : String(error);
@@ -119,9 +158,16 @@ function executeCommand(command: string, args: string[], options?: SpawnOptionsW
 	});
 }
 
+interface FileChange {
+	relativePath: string;
+	originalContent: string;
+	newContent: string;
+	type: 'modified' | 'created' | 'deleted';
+}
+
 class WorkspaceOverlay {
 	private disposed = false;
-	private finalizeResult?: { diffRelativePath: string };
+	private finalizeResult?: { changes: FileChange[] };
 
 	private constructor(
 		private readonly workspaceUri: vscode.Uri,
@@ -154,34 +200,85 @@ class WorkspaceOverlay {
 		return new WorkspaceOverlay(workspaceUri, overlayRoot, cloneUri, scriptDir, indexJsUri);
 	}
 
-	async finalize(): Promise<{ diffRelativePath: string }> {
+	async finalize(): Promise<{ changes: FileChange[] }> {
 		if (this.disposed) {
-			return this.finalizeResult ?? { diffRelativePath: 'agent-changes.diff' };
+			return this.finalizeResult ?? { changes: [] };
 		}
 		this.disposed = true;
-		const diffFilePath = path.join(this.workspaceUri.fsPath, 'agent-changes.diff');
-		const diffRelativePath = path.relative(this.workspaceUri.fsPath, diffFilePath) || 'agent-changes.diff';
-		let record: { diffRelativePath: string } | undefined;
+		let record: { changes: FileChange[] } | undefined;
 		try {
-			const diffResult = await executeCommand('diff', ['-ruN', this.workspaceUri.fsPath, this.cloneUri.fsPath]);
-			let diffContent: string;
-			if (diffResult.exitCode === 0) {
-				diffContent = '# No changes detected.\n';
-			} else if (diffResult.exitCode === 1) {
-				const combined = [diffResult.output, diffResult.errorOutput].filter((segment) => segment && segment.trim().length > 0).join('\n');
-				diffContent = combined.length > 0 ? combined : '# Changes detected but diff output was empty.\n';
-			} else {
-				const message = diffResult.errorOutput || diffResult.output || 'Unknown diff error.';
-				diffContent = `# diff exited with code ${diffResult.exitCode}\n${message}\n`;
-			}
-
-			await fsPromises.writeFile(diffFilePath, diffContent, 'utf8');
-			record = { diffRelativePath };
+			const changes = await this.collectChanges();
+			record = { changes };
 			return record;
 		} finally {
 			this.finalizeResult = record;
 			await fsPromises.rm(this.overlayRoot, { recursive: true, force: true }).catch(() => undefined);
 		}
+	}
+
+	private async collectChanges(): Promise<FileChange[]> {
+		const changes: FileChange[] = [];
+		const workspacePath = this.workspaceUri.fsPath;
+		const clonePath = this.cloneUri.fsPath;
+
+		// Get all files in both directories
+		const originalFiles = await this.getAllFiles(workspacePath);
+		const cloneFiles = await this.getAllFiles(clonePath);
+
+		const allRelativePaths = new Set([...originalFiles, ...cloneFiles]);
+
+		for (const relativePath of allRelativePaths) {
+			const originalPath = path.join(workspacePath, relativePath);
+			const clonedPath = path.join(clonePath, relativePath);
+
+			const originalExists = originalFiles.has(relativePath);
+			const cloneExists = cloneFiles.has(relativePath);
+
+			if (!originalExists && cloneExists) {
+				// New file created
+				const newContent = await fsPromises.readFile(clonedPath, 'utf8');
+				changes.push({ relativePath, originalContent: '', newContent, type: 'created' });
+			} else if (originalExists && !cloneExists) {
+				// File deleted
+				const originalContent = await fsPromises.readFile(originalPath, 'utf8');
+				changes.push({ relativePath, originalContent, newContent: '', type: 'deleted' });
+			} else if (originalExists && cloneExists) {
+				// Check if modified
+				const originalContent = await fsPromises.readFile(originalPath, 'utf8');
+				const newContent = await fsPromises.readFile(clonedPath, 'utf8');
+				if (originalContent !== newContent) {
+					changes.push({ relativePath, originalContent, newContent, type: 'modified' });
+				}
+			}
+		}
+
+		return changes;
+	}
+
+	private async getAllFiles(dirPath: string, basePath: string = dirPath): Promise<Set<string>> {
+		const files = new Set<string>();
+		const entries = await fsPromises.readdir(dirPath, { withFileTypes: true }).catch(() => []);
+
+		for (const entry of entries) {
+			const fullPath = path.join(dirPath, entry.name);
+			const relativePath = path.relative(basePath, fullPath);
+
+			// Skip common directories that shouldn't be compared
+			if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.DS_Store') {
+				continue;
+			}
+
+			if (entry.isDirectory()) {
+				const subFiles = await this.getAllFiles(fullPath, basePath);
+				for (const subFile of subFiles) {
+					files.add(subFile);
+				}
+			} else if (entry.isFile()) {
+				files.add(relativePath);
+			}
+		}
+
+		return files;
 	}
 
 	async clearTempScript(): Promise<void> {
@@ -208,7 +305,6 @@ function buildContextSummary(taskPrompt: string, notes?: string): string {
 	if (notes && notes.trim().length > 0) {
 		sections.push(`<notes>\n${notes.trim()}\n</notes>`);
 	}
-	sections.push('<rules>\nYou cannot directly inspect the workspace. The only way to read or edit files is by writing Node.js code that runs as index.js. The next step only receives your script plus its stdout/stderr, so print any file contents or conclusions you want preserved.\n</rules>');
 	return sections.join('\n\n');
 }
 

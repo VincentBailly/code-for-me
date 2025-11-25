@@ -10,7 +10,7 @@
     "url": "https://example.com/vingent/vscode-lm-client.git"
   },
   "engines": {
-    "vscode": "^1.93.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Other"
@@ -39,7 +39,7 @@
     "@types/glob": "^8.1.0",
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.11.30",
-    "@types/vscode": "^1.93.0",
+    "@types/vscode": "^1.95.0",
     "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^3.1.0",
     "glob": "^10.3.10",
