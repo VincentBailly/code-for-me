@@ -1,4 +1,7 @@
-import { spawn } from 'child_process';
+import { spawn, SpawnOptionsWithoutStdio } from 'child_process';
+import { promises as fsPromises } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 
@@ -7,6 +10,7 @@ export function activate(context: vscode.ExtensionContext) {
 		let i = 0;
 		const workspaceUri = getRequiredWorkspaceUri();
 		const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
+		const overlay = await WorkspaceOverlay.create(workspaceUri);
 		async function agentLoop(taskPrompt: string, savedNotes?: string): Promise<string> {
 			if (i++ > 5) {
 				return 'I have reached the maximum number of iterations.';
@@ -24,11 +28,18 @@ export function activate(context: vscode.ExtensionContext) {
 			const codePrompt = `${contextSummary}\n\n${codeObjective}\n\nRules:\n- Output ONLY Node.js code (no backticks, no commentary).\n- Use workspace-relative paths.\n- Remember you cannot read or edit files directly; only this script will execute.\n- Any workspace modifications must be performed by this script (use fs APIs, child_process, etc.).\n- The only information that reaches the next step is this script plus its stdout/stderr, so print any file contents or summaries you want preserved.\n- Print concise progress updates if helpful.`;
 			const rawCodeResponse = await sendModelRequest(chatRequestWithModel.model, codePrompt, token, 'Generate Node.js workspace script');
 			const sanitizedCode = stripCodeFences(rawCodeResponse);
-			const indexJsUri = vscode.Uri.joinPath(workspaceUri, 'index.js');
+			const indexJsUri = overlay.indexJsUri;
 			const encoder = new TextEncoder();
 			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(sanitizedCode));
 
-			const { output, errorOutput, exitCode } = await runScriptAndGetOutput(indexJsUri);
+			let commandResult: CommandResult;
+			try {
+				commandResult = await runScriptAndGetOutput(indexJsUri, overlay.cloneUri.fsPath);
+			} finally {
+				await overlay.clearTempScript().catch(() => undefined);
+			}
+
+			const { output, errorOutput, exitCode } = commandResult;
 			const rendered = renderCommandResult(output, errorOutput, exitCode);
 
 			const truncatedCode = truncateForPrompt(sanitizedCode, 12000);
@@ -51,8 +62,16 @@ export function activate(context: vscode.ExtensionContext) {
 
 			return agentLoop(taskPrompt, notesContent);
 		}
-		const response = await agentLoop(request.prompt);
-		stream.markdown(response);
+		try {
+			const response = await agentLoop(request.prompt);
+			const finalizeResult = await overlay.finalize();
+			const notice = finalizeResult ? `\n\n> Diff saved to \`${finalizeResult.diffRelativePath}\`.` : '';
+			stream.markdown(`${response}${notice}`);
+		} catch (error) {
+			await overlay.finalize().catch(() => undefined);
+			const message = error instanceof Error ? error.message : String(error);
+			stream.markdown(`Agent execution failed: ${message}`);
+		}
 
 
 	});
@@ -75,27 +94,103 @@ function renderCommandResult(output: string, errorOutput: string, exitCode: numb
 	return result;
 }
 
-function runScriptAndGetOutput(scriptUri: vscode.Uri): Promise<{ output: string, errorOutput: string, exitCode: number }> {
-	return new Promise((resolve, reject) => {
-		const child = spawn('node', [scriptUri.fsPath,], { cwd: vscode.workspace.rootPath });
+type CommandResult = { output: string; errorOutput: string; exitCode: number };
+
+function executeCommand(command: string, args: string[], options?: SpawnOptionsWithoutStdio): Promise<CommandResult> {
+	return new Promise((resolve) => {
+		const child = spawn(command, args, options);
 		let output = '';
 		let errorOutput = '';
 
-		child.stdout.on('data', (data) => {
+		child.stdout?.on('data', (data) => {
 			output += data.toString();
 		});
 
-		child.stderr.on('data', (data) => {
+		child.stderr?.on('data', (data) => {
 			errorOutput += data.toString();
 		});
 
 		child.on('close', (code) => {
-			resolve({ output, errorOutput, exitCode: code || 0 });
+			resolve({ output, errorOutput, exitCode: typeof code === 'number' ? code : 0 });
 		});
 		child.on('error', (err) => {
 			resolve({ output, errorOutput: err.message, exitCode: -1 });
 		});
 	});
+}
+
+class WorkspaceOverlay {
+	private disposed = false;
+	private finalizeResult?: { diffRelativePath: string };
+
+	private constructor(
+		private readonly workspaceUri: vscode.Uri,
+		private readonly overlayRoot: string,
+		readonly cloneUri: vscode.Uri,
+		private readonly scriptDir: string,
+		readonly indexJsUri: vscode.Uri
+	) { }
+
+	static async create(workspaceUri: vscode.Uri): Promise<WorkspaceOverlay> {
+		const overlayRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'vingent-overlay-'));
+		const workspaceBasename = path.basename(workspaceUri.fsPath);
+		const cloneParent = overlayRoot;
+		const srcPath = workspaceUri.fsPath;
+		let copyResult = await executeCommand('cp', ['-cR', srcPath, cloneParent]);
+		if (copyResult.exitCode !== 0) {
+			await fsPromises.rm(path.join(cloneParent, workspaceBasename), { recursive: true, force: true }).catch(() => undefined);
+			copyResult = await executeCommand('cp', ['-R', srcPath, cloneParent]);
+		}
+		if (copyResult.exitCode !== 0) {
+			await fsPromises.rm(overlayRoot, { recursive: true, force: true }).catch(() => undefined);
+			const reason = copyResult.errorOutput || copyResult.output || 'Failed to duplicate workspace for overlay usage.';
+			throw new Error(reason.trim());
+		}
+
+		const clonePath = path.join(cloneParent, workspaceBasename);
+		const cloneUri = vscode.Uri.file(clonePath);
+		const scriptDir = await fsPromises.mkdtemp(path.join(overlayRoot, 'script-'));
+		const indexJsUri = vscode.Uri.file(path.join(scriptDir, 'index.js'));
+		return new WorkspaceOverlay(workspaceUri, overlayRoot, cloneUri, scriptDir, indexJsUri);
+	}
+
+	async finalize(): Promise<{ diffRelativePath: string }> {
+		if (this.disposed) {
+			return this.finalizeResult ?? { diffRelativePath: 'agent-changes.diff' };
+		}
+		this.disposed = true;
+		const diffFilePath = path.join(this.workspaceUri.fsPath, 'agent-changes.diff');
+		const diffRelativePath = path.relative(this.workspaceUri.fsPath, diffFilePath) || 'agent-changes.diff';
+		let record: { diffRelativePath: string } | undefined;
+		try {
+			const diffResult = await executeCommand('diff', ['-ruN', this.workspaceUri.fsPath, this.cloneUri.fsPath]);
+			let diffContent: string;
+			if (diffResult.exitCode === 0) {
+				diffContent = '# No changes detected.\n';
+			} else if (diffResult.exitCode === 1) {
+				const combined = [diffResult.output, diffResult.errorOutput].filter((segment) => segment && segment.trim().length > 0).join('\n');
+				diffContent = combined.length > 0 ? combined : '# Changes detected but diff output was empty.\n';
+			} else {
+				const message = diffResult.errorOutput || diffResult.output || 'Unknown diff error.';
+				diffContent = `# diff exited with code ${diffResult.exitCode}\n${message}\n`;
+			}
+
+			await fsPromises.writeFile(diffFilePath, diffContent, 'utf8');
+			record = { diffRelativePath };
+			return record;
+		} finally {
+			this.finalizeResult = record;
+			await fsPromises.rm(this.overlayRoot, { recursive: true, force: true }).catch(() => undefined);
+		}
+	}
+
+	async clearTempScript(): Promise<void> {
+		await fsPromises.rm(this.indexJsUri.fsPath, { force: true }).catch(() => undefined);
+	}
+}
+
+function runScriptAndGetOutput(scriptUri: vscode.Uri, workingDirectory: string): Promise<{ output: string, errorOutput: string, exitCode: number }> {
+	return executeCommand('node', [scriptUri.fsPath], { cwd: workingDirectory, env: process.env });
 }
 export function deactivate() { }
 
