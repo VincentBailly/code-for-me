@@ -11,6 +11,11 @@ export function activate(context: vscode.ExtensionContext) {
 		const workspaceUri = getRequiredWorkspaceUri();
 		const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
 		const overlay = await WorkspaceOverlay.create(workspaceUri);
+
+		// Get a fast model for summarization
+		const fastModels = await vscode.lm.selectChatModels({ id: 'gpt-4.1' });
+		const fastModel = fastModels[0] ?? chatRequestWithModel.model;
+
 		async function agentLoop(taskPrompt: string, savedNotes?: string): Promise<string> {
 			if (i++ > 5) {
 				return 'I have reached the maximum number of iterations.';
@@ -22,10 +27,14 @@ export function activate(context: vscode.ExtensionContext) {
 			const rawResponse = await sendModelRequest(chatRequestWithModel.model, agentPrompt, token, 'Agent iteration');
 			const sanitizedResponse = stripCodeFences(rawResponse);
 
-			// Execute the script
+			// Execute the script and summarize it in parallel
 			const indexJsUri = overlay.indexJsUri;
 			const encoder = new TextEncoder();
 			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(sanitizedResponse));
+
+			const summarizePromise = sendModelRequest(fastModel, `Summarize this script in 5-10 words (what it does, not how):\n\n${truncateForPrompt(sanitizedResponse, 4000)}`, token, 'Summarize script').then(summary => {
+				stream.markdown(`**Iteration ${i}:** ${summary.trim()}\n\n`);
+			}).catch(() => undefined);
 
 			let commandResult: CommandResult;
 			try {
@@ -33,6 +42,8 @@ export function activate(context: vscode.ExtensionContext) {
 			} finally {
 				await overlay.clearTempScript().catch(() => undefined);
 			}
+
+			await summarizePromise;
 
 			const { output, errorOutput, exitCode } = commandResult;
 			const rendered = renderCommandResult(output, errorOutput, exitCode);
