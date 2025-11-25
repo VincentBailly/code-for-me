@@ -11,6 +11,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const workspaceUri = getRequiredWorkspaceUri();
 		const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
 		const overlay = await WorkspaceOverlay.create(workspaceUri);
+		const scriptMarker = '//this is a script';
 		async function agentLoop(taskPrompt: string, savedNotes?: string): Promise<string> {
 			if (i++ > 5) {
 				return 'I have reached the maximum number of iterations.';
@@ -18,23 +19,19 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const contextSummary = buildContextSummary(taskPrompt, savedNotes);
 
-			// Skip the "can complete" question on the first iteration - we always need to gather info first
-			let canComplete: 'YES' | 'NO' = 'NO';
-			if (savedNotes) {
-				const canCompleteQuestion = `${contextSummary}\n\nQuestion: Can you write a single Node.js script that will gather all needed information and perform all edits to fully satisfy the user request?\n\nAnswer format: respond with ONLY "YES" or "NO" on a single line. Answer "YES" only if you are certain you have everything needed. Do not add explanation or additional text.`;
-				const canCompleteResponse = await sendModelRequest(chatRequestWithModel.model, canCompleteQuestion, token, 'Assess ability to finish in one script');
-				canComplete = normalizeYesNo(canCompleteResponse);
+			const agentPrompt = `${contextSummary}\n\nYou are an agent. Respond with either:\n1. A Node.js script starting with "${scriptMarker}" (first line must be exactly that comment). The script runs in the workspace root. Use relative paths or process.cwd(). Read/write files using fs APIs. Use child_process for commands. Use console.log() to output information you need for the next iteration.\n2. A final summary for the user (if the task is complete or you have the answer).\n\nDo not include both. If you output a script, output ONLY the script (no backticks, no commentary).`;
+			const rawResponse = await sendModelRequest(chatRequestWithModel.model, agentPrompt, token, 'Agent iteration');
+			const sanitizedResponse = stripCodeFences(rawResponse);
+
+			if (!sanitizedResponse.startsWith(scriptMarker)) {
+				// Response is a final summary for the user
+				return sanitizedResponse;
 			}
 
-			const codeObjective = canComplete === 'YES'
-				? 'Write a Node.js script that completes the task in one run. It should gather any information you need and apply all required edits.'
-				: 'Write the Node.js script that focuses on gathering missing information or taking preparatory actions to make the task easier next iteration.';
-			const codePrompt = `${contextSummary}\n\n${codeObjective}\n\nRules:\n- Output ONLY Node.js code (no backticks, no commentary).\n- The script runs in the workspace root. Use relative paths or process.cwd().\n- Read/write files using fs APIs. Use child_process for commands.\n- All workspace changes must be done by this script.`;
-			const rawCodeResponse = await sendModelRequest(chatRequestWithModel.model, codePrompt, token, 'Generate Node.js workspace script');
-			const sanitizedCode = stripCodeFences(rawCodeResponse);
+			// Response is a script - execute it
 			const indexJsUri = overlay.indexJsUri;
 			const encoder = new TextEncoder();
-			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(sanitizedCode));
+			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(sanitizedResponse));
 
 			let commandResult: CommandResult;
 			try {
@@ -46,19 +43,10 @@ export function activate(context: vscode.ExtensionContext) {
 			const { output, errorOutput, exitCode } = commandResult;
 			const rendered = renderCommandResult(output, errorOutput, exitCode);
 
-			const truncatedCode = truncateForPrompt(sanitizedCode, 12000);
+			const truncatedCode = truncateForPrompt(sanitizedResponse, 12000);
 			const truncatedResult = truncateForPrompt(rendered, 12000);
 			const scriptSection = `<script>\n${truncatedCode}\n</script>`;
 			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
-			const canFinalizeQuestion = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nQuestion: Is the task now complete and can you provide a final answer to the user?\n\nAnswer format: respond with ONLY "YES" or "NO" on a single line. Do not add explanation or additional text.`;
-			const canFinalizeResponse = await sendModelRequest(chatRequestWithModel.model, canFinalizeQuestion, token, 'Assess ability to finalize');
-			const canFinalize = normalizeYesNo(canFinalizeResponse);
-
-			if (canFinalize === 'YES') {
-				const finalAnswerPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nProvide the final response. Explain what was completed and the current state. Only describe changes that were actually executed.`;
-				const finalAnswer = await sendModelRequest(chatRequestWithModel.model, finalAnswerPrompt, token, 'Deliver final answer to the user');
-				return finalAnswer;
-			}
 
 			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nCompact the context for next iteration. Keep all details still needed to finish the task (including relevant file contents), remove details no longer needed. The next iteration will receive the task description and these notes. When in doubt, keep more rather than less.`;
 			const notesResponse = await sendModelRequest(chatRequestWithModel.model, notesPrompt, token, 'Capture next-iteration memory');
@@ -318,15 +306,6 @@ async function sendModelRequest(model: vscode.LanguageModelChat, prompt: string,
 		aggregated += fragment;
 	}
 	return aggregated;
-}
-
-function normalizeYesNo(response: string): 'YES' | 'NO' {
-	const firstMeaningfulLine = response.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '';
-	const normalized = firstMeaningfulLine.trim().toUpperCase();
-	if (normalized === 'YES' || normalized.startsWith('YES')) {
-		return 'YES';
-	}
-	return 'NO';
 }
 
 function stripCodeFences(text: string): string {
