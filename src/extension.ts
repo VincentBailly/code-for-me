@@ -11,7 +11,6 @@ export function activate(context: vscode.ExtensionContext) {
 		const workspaceUri = getRequiredWorkspaceUri();
 		const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
 		const overlay = await WorkspaceOverlay.create(workspaceUri);
-		const scriptMarker = '//this is a script';
 		async function agentLoop(taskPrompt: string, savedNotes?: string): Promise<string> {
 			if (i++ > 5) {
 				return 'I have reached the maximum number of iterations.';
@@ -19,16 +18,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const contextSummary = buildContextSummary(taskPrompt, savedNotes);
 
-			const agentPrompt = `${contextSummary}\n\nYou are an agent. Respond with either:\n1. A Node.js script starting with "${scriptMarker}" (first line must be exactly that comment). The script runs in the workspace root. Use relative paths or process.cwd(). Read/write files using fs APIs. Use child_process for commands. Use console.log() to output information you need for the next iteration.\n2. A final summary for the user (if the task is complete or you have the answer).\n\nDo not include both. If you output a script, output ONLY the script (no backticks, no commentary).`;
+			const agentPrompt = `${contextSummary}\n\nYou are an agent. Respond with a Node.js script. The script runs in the workspace root. Use relative paths or process.cwd(). Read/write files using fs APIs. Use child_process for commands. Use console.log() to output information you need for the next iteration.\n\nOutput ONLY the script (no backticks, no commentary).`;
 			const rawResponse = await sendModelRequest(chatRequestWithModel.model, agentPrompt, token, 'Agent iteration');
 			const sanitizedResponse = stripCodeFences(rawResponse);
 
-			if (!sanitizedResponse.startsWith(scriptMarker)) {
-				// Response is a final summary for the user
-				return sanitizedResponse;
-			}
-
-			// Response is a script - execute it
+			// Execute the script
 			const indexJsUri = overlay.indexJsUri;
 			const encoder = new TextEncoder();
 			await vscode.workspace.fs.writeFile(indexJsUri, encoder.encode(sanitizedResponse));
@@ -48,9 +42,13 @@ export function activate(context: vscode.ExtensionContext) {
 			const scriptSection = `<script>\n${truncatedCode}\n</script>`;
 			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
 
-			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nCompact the context for next iteration. Keep all details still needed to finish the task (including relevant file contents), remove details no longer needed. The next iteration will receive the task description and these notes. When in doubt, keep more rather than less.`;
-			const notesResponse = await sendModelRequest(chatRequestWithModel.model, notesPrompt, token, 'Capture next-iteration memory');
+			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. Compacted context for next iteration (keep all details still needed to finish the task including relevant file contents, remove details no longer needed). The next iteration will receive the task description and these notes. When in doubt, keep more rather than less.\n2. A final summary for the user if the task is complete.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.`;
+			const notesResponse = await sendModelRequest(chatRequestWithModel.model, notesPrompt, token, 'Capture next-iteration memory or finalize');
 			const notesContent = notesResponse.trim();
+
+			if (notesContent.startsWith('FINAL:')) {
+				return notesContent.slice(6).trim();
+			}
 
 			return agentLoop(taskPrompt, notesContent);
 		}
