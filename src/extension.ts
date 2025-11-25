@@ -9,12 +9,11 @@ export function activate(context: vscode.ExtensionContext) {
 	const chatParticipant = vscode.chat.createChatParticipant('vingent.participant', async (request, _chatContext, stream, token) => {
 		let i = 0;
 		const workspaceUri = getRequiredWorkspaceUri();
-		const chatRequestWithModel = request as vscode.ChatRequest & { model: vscode.LanguageModelChat };
 		const overlay = await WorkspaceOverlay.create(workspaceUri);
 
 		// Get a fast model for summarization
 		const fastModels = await vscode.lm.selectChatModels({ id: 'gpt-4.1' });
-		const fastModel = fastModels[0] ?? chatRequestWithModel.model;
+		const fastModel = fastModels[0] ?? request.model;
 
 		async function agentLoop(taskPrompt: string, savedNotes?: string): Promise<string> {
 			if (i++ > 5) {
@@ -23,8 +22,17 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const contextSummary = buildContextSummary(taskPrompt, savedNotes);
 
-			const agentPrompt = `${contextSummary}\n\nYou are an agent. Respond with a Node.js script. The script runs in the workspace root. Use relative paths or process.cwd(). Read/write files using fs APIs. Use child_process for commands. Use console.log() to output information you need for the next iteration.\n\nOutput ONLY the script (no backticks, no commentary).`;
-			const rawResponse = await sendModelRequest(chatRequestWithModel.model, agentPrompt, token, 'Agent iteration');
+			const agentPrompt = `${contextSummary}\n\nYou are a seasoned coding agent who understands that working iteratively - splitting the task into small steps - produces better results. You are participating to a competition between 10 coding agents who are all given the same task and the highest quality result will be used and all the other ones dismissed. Your script will run, you'll see the output, and then you can run another script — repeat as many time as you need until the task is done. The time or number of iterations is not considered for the competition, only the final result is. Agents producing code changes unrelated to the task will be immediately disqualified.
+
+Respond with a Node.js script. The script runs in the workspace root. Use relative paths or process.cwd().
+
+Examples of things you can do:
+- Explore: fs.readFileSync(), fs.readdirSync(), console.log() to understand the codebase
+- Modify: fs.writeFileSync(), fs.mkdirSync(), etc.
+- Run commands: child_process.execSync() or spawn
+
+Output ONLY the script (no backticks, no commentary).`;
+			const rawResponse = await sendModelRequest(request.model, agentPrompt, token, 'Agent iteration');
 			const sanitizedResponse = stripCodeFences(rawResponse);
 
 			// Execute the script and summarize it in parallel
@@ -54,7 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
 
 			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. Compacted context for next iteration (keep all details still needed to finish the task including relevant file contents, remove details no longer needed). The next iteration will receive the task description and these notes. When in doubt, keep more rather than less.\n2. A final summary for the user if the task is complete.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.`;
-			const notesResponse = await sendModelRequest(chatRequestWithModel.model, notesPrompt, token, 'Capture next-iteration memory or finalize');
+			const notesResponse = await sendModelRequest(request.model, notesPrompt, token, 'Capture next-iteration memory or finalize');
 			const notesContent = notesResponse.trim();
 
 			if (notesContent.startsWith('FINAL:')) {
