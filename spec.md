@@ -2,7 +2,7 @@
 
 ## 1. Goal
 - Introduce a structured working-memory system that tracks short-term context for the active task.
-- Replace the current aggressive summarization loop with three focused prompts (Progress, Key Learnings, Verbatim Context) that update memory using a minimal plain-text DSL.
+- Replace the current aggressive summarization loop with a single unified prompt that updates all memory sections using a minimal plain-text DSL.
 
 ## 2. Memory Model
 - Memory is represented as three independent sections:
@@ -12,9 +12,9 @@
 - New entries in persistent sections receive system-generated IDs (`KL-#`, `VC-#`).
 
 ## 3. Update Workflow Overview
-1. Capture current memory state and generate three tailored prompt payloads.
-2. Query three separate models in parallel with section-specific instructions.
-3. Parse responses using the plain-text DSL described in §4.
+1. Capture current memory state and generate a single prompt payload containing all sections.
+2. Query the model with unified instructions for all memory sections.
+3. Parse the response using the plain-text DSL described in §4.
 4. Validate operations (ID existence, non-empty reasons).
 5. Apply updates to the memory state, generating new IDs and timestamps for added items.
 6. Persist the updated state and emit a human-readable diff/log entry.
@@ -54,31 +54,21 @@ VERBATIM_CONTEXT:
 - Insights in `Key Learnings` must remain single-line
 - `Verbatim Context` snippets allow newline content but must retain original indentation and whitespace.
 
-## 5. Prompt Specifications
+## 5. Prompt Specification
 
-### 5.1 Progress Prompt (Model A)
-- **Input**: Previous `Current Progress` bullets, latest task description, and DSL example.
+### 5.1 Unified Memory Update Prompt
+- **Input**:
+	- Previous `Current Progress` bullets and latest task description.
+	- Current `KL-*` entries (with IDs).
+	- Existing `VC-*` entries (label + snippet).
+	- Full DSL example covering all sections.
 - **Instructions**:
-	- Rewrite the section fully each iteration.
-	- Include `In Progress` (mandatory) and optionally `Completed` / `Remaining` if useful.
-	- Keep bullets concise (<100 chars suggested) and action-oriented.
-- **Output**: Section formatted exactly as specified in §4.1 with no `reason` field.
+	- **Current Progress**: Rewrite the section fully each iteration. Include `In Progress` (mandatory) and optionally `Completed` / `Remaining` if useful. Keep bullets concise (<100 chars suggested) and action-oriented.
+	- **Key Learnings**: Add at most 1–3 high-value insights per iteration; prefer no additions if unsure. Archives require explicit IDs and reasons. Insights must remain single-line with no filler text.
+	- **Verbatim Context**: Only add snippets when required for upcoming steps. Archive requests must cite a reason (e.g., "outdated config"). Use short labels that describe the snippet purpose (file path, config key, etc.).
+- **Output**: Complete DSL block containing all three sections (`CURRENT_PROGRESS`, `KEY_LEARNINGS`, `VERBATIM_CONTEXT`) formatted as specified in §4.1. Empty `ADD` or `ARCHIVE` lists may appear as `ADD:` followed by `(none)` or be omitted entirely—implementation must support both forms.
 
-### 5.2 Key Learnings Prompt (Model B)
-- **Input**: Current `KL-*` entries (with IDs), definition of ADD/ARCHIVE verbs, quality bar (“only add if high-value and certain”), and DSL example.
-- **Instructions**:
-	- Encourage at most 1–3 additions per iteration; prefer `no change` if unsure.
-	- Remind that archives require explicit IDs and reasons.
-	- Forbid multi-line insights or filler text.
-- **Output**: `KEY_LEARNINGS` block using DSL. Empty `ADD` or `ARCHIVE` lists should appear as `ADD:` followed by `(none)` to simplify parsing or can be omitted entirely—implementation must support both forms.
 
-### 5.3 Verbatim Context Prompt (Model C)
-- **Input**: Existing `VC-*` entries (label + snippet), explanation of editing rules, and DSL example.
-- **Instructions**:
-	- Only add snippets when they are required for upcoming steps.
-	- Remind that archive requests must cite a reason (e.g., “outdated config”).
-	- Encourage short labels that describe the snippet purpose (file path, config key, etc.).
-- **Output**: `VERBATIM_CONTEXT` block per DSL. Support multi-line snippets bounded by indentation until next bullet.
 
 ## 6. Parsing & Merge Logic
 - Implement parsers for each section using deterministic finite state machines or robust regex with validation.
