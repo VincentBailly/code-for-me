@@ -30,6 +30,8 @@ Other agents are working on the exact same task, humans will review and judge yo
 
 Respond with a Node.js script (no backticks, no commentary). The script runs in the workspace root.
 
+Writing nodejs scripts is the only way you can interact with the codebase and make changes.
+
 You can use fs, child_process, path, etc. Use console.log() to output information you need for the next iteration.`;
 			stream.progress('Thinking...');
 			const rawResponse = await sendModelRequest(request.model, agentPrompt, token, 'Agent iteration');
@@ -72,7 +74,7 @@ You can use fs, child_process, path, etc. Use console.log() to output informatio
 			const scriptSection = `<script>\n${truncatedCode}\n</script>`;
 			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
 
-			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. The full context for next iteration. Your response will be used as the starting context for the next iteration, anything else will be lost. If you omit information in response and that information is needed in the future, then you will need to re-query/calculate/produce this information again, this will hurt your ability to generate a high quality result so you don't want it to happen\n2. A final summary for the user if the task is complete.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.`;
+			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. The full context for next iteration. Your response will be used as the starting context for the next iteration, anything else will be lost. If you omit information in response and that information is needed in the future, then you will need to re-query/calculate/produce this information again, this will hurt your ability to generate a high quality result so you don't want it to happen\n2. A final summary for the user if the task is complete, and only if the task is fully complete and all the changes are applied.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.\nRemember that only the changes applied by the nodejs scripts are considered, it is not enough to just describe changes, they must be applied via scripts.`;
 			stream.progress('Updating memory...');
 			const notesResponse = await sendModelRequest(request.model, notesPrompt, token, 'Capture next-iteration memory or finalize');
 			const notesContent = notesResponse.trim();
