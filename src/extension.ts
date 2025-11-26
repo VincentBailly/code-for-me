@@ -19,7 +19,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const fastModel = fastModels[0] ?? request.model;
 
 		async function agentLoop(taskPrompt: string, savedNotes?: string): Promise<string> {
-			if (i++ > 5) {
+			if (i++ > 15) {
 				return 'I have reached the maximum number of iterations.';
 			}
 
