@@ -44,7 +44,7 @@ You can use fs, child_process, path, etc. Use console.log() to output informatio
 
 			const scriptUri = logProvider.addContent(`/iteration-${i}/script.js`, sanitizedResponse);
 
-			const summaryPrompt = `Summarize this script in 5-10 words (what it does, not how):\n\n${truncateForPrompt(sanitizedResponse, 4000)}`;
+			const summaryPrompt = `Summarize this script in 5-10 words (what it does, not how):\n\n${sanitizedResponse}`;
 			const summarizePromise = sendModelRequest(fastModel, summaryPrompt, token, 'Summarize script').then(summary => {
 				stream.markdown(`**Iteration ${i}:** ${summary.trim()}`);
 			}).catch(() => undefined);
@@ -69,10 +69,8 @@ You can use fs, child_process, path, etc. Use console.log() to output informatio
 			stream.anchor(outputUri, 'View Output');
 			stream.markdown(')\n\n');
 
-			const truncatedCode = truncateForPrompt(sanitizedResponse, 12000);
-			const truncatedResult = truncateForPrompt(rendered, 12000);
-			const scriptSection = `<script>\n${truncatedCode}\n</script>`;
-			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
+			const scriptSection = `<script>\n${sanitizedResponse}\n</script>`;
+			const scriptOutputSection = `<scriptOutput>\n${rendered}\n</scriptOutput>`;
 
 			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. The full context for next iteration. Your response will be used as the starting context for the next iteration, anything else will be lost. If you omit information in response and that information is needed in the future, then you will need to re-query/calculate/produce this information again, this will hurt your ability to generate a high quality result so you don't want it to happen\n2. A final summary for the user if the task is complete, and only if the task is fully complete and all the changes are applied.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.\nRemember that only the changes applied by the nodejs scripts are considered, it is not enough to just describe changes, they must be applied via scripts.`;
 			stream.progress('Updating memory...');
@@ -353,12 +351,7 @@ function stripCodeFences(text: string): string {
 	return trimmed;
 }
 
-function truncateForPrompt(text: string, maxLength = 12000): string {
-	if (text.length <= maxLength) {
-		return text;
-	}
-	return `${text.slice(0, maxLength)}\n\n...[truncated]`;
-}
+
 
 class VingentLogProvider implements vscode.TextDocumentContentProvider {
 	private _documents = new Map<string, string>();
