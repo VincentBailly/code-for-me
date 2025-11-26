@@ -25,14 +25,21 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const contextSummary = buildContextSummary(taskPrompt, savedNotes);
 
-			const agentPrompt = `${contextSummary}\n\nYou are an autonomous coding agent. Your script will run, you'll see the output, then you can run another script. Repeat until done.
-Other agents are working on the exact same task, humans will review and judge your final result and the prefered one will be merged into the main codebase. The time or number of iterations you take does not matter, only the quality of your final result.
+			const agentPrompt = `${contextSummary}
 
-Respond with a Node.js script (no backticks, no commentary). The script runs in the workspace root.
+You are a coding agent. Your goal is to complete the task above.
+You work in a loop: Write Script -> Run -> Observe Output -> Repeat.
 
-Writing nodejs scripts is the only way you can interact with the codebase and make changes.
+INSTRUCTIONS:
+1. Write a Node.js script to perform the next step of the task.
+2. The script will run in the workspace root.
+3. Use standard libraries like 'fs', 'path', 'child_process'.
+4. Use console.log() to print any information you need to see for the next step.
+5. Writing scripts is the ONLY way to read files, list directories, or modify code.
 
-You can use fs, child_process, path, etc. Use console.log() to output information you need for the next iteration.`;
+OUTPUT FORMAT:
+- Provide ONLY the Node.js code.
+- Do not include markdown backticks or explanations.`;
 			stream.progress('Thinking...');
 			const rawResponse = await sendModelRequest(request.model, agentPrompt, token, 'Agent iteration');
 			const sanitizedResponse = stripCodeFences(rawResponse);
@@ -72,7 +79,24 @@ You can use fs, child_process, path, etc. Use console.log() to output informatio
 			const scriptSection = `<script>\n${sanitizedResponse}\n</script>`;
 			const scriptOutputSection = `<scriptOutput>\n${rendered}\n</scriptOutput>`;
 
-			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. The full context for next iteration. Your response will be used as the starting context for the next iteration, anything else will be lost. If you omit information in response and that information is needed in the future, then you will need to re-query/calculate/produce this information again, this will hurt your ability to generate a high quality result so you don't want it to happen\n2. A final summary for the user if the task is complete, and only if the task is fully complete and all the changes are applied.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.\nRemember that only the changes applied by the nodejs scripts are considered, it is not enough to just describe changes, they must be applied via scripts.`;
+			const notesPrompt = `${contextSummary}
+
+Script that just ran:
+${scriptSection}
+
+Script output:
+${scriptOutputSection}
+
+DECISION TIME:
+Is the task fully complete?
+- YES: Start your response with "FINAL:" followed by a summary of what you did.
+- NO: Write a note to your future self.
+
+NOTES INSTRUCTIONS (if not finished):
+- Summarize what you have learned so far.
+- State exactly what the next step should be.
+- Include any file paths or content you need to remember.
+- Your response here will be the ONLY memory available in the next iteration.`;
 			stream.progress('Updating memory...');
 			const notesResponse = await sendModelRequest(request.model, notesPrompt, token, 'Capture next-iteration memory or finalize');
 			const notesContent = notesResponse.trim();
