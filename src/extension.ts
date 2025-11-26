@@ -25,16 +25,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const contextSummary = buildContextSummary(taskPrompt, savedNotes);
 
-			const agentPrompt = `${contextSummary}\n\nYou are a seasoned fully autonomous coding agent who understands that working iteratively - splitting the task into small steps - produces better results. You are participating to a competition between 10 coding agents who are all given the same task and the highest quality result will be used and all the other ones dismissed. Your script will run, you'll see the output, and then you can run another script — repeat as many time as you need until the task is done. The time or number of iterations is not considered for the competition, only the final result is. Agents producing code changes unrelated to the task will be immediately disqualified.
+			const agentPrompt = `${contextSummary}\n\nYou are an autonomous coding agent. Your script will run, you'll see the output, then you can run another script. Repeat until done.
+Other agents are working on the exact same task, humans will review and judge your final result and the prefered one will be merged into the main codebase. The time or number of iterations you take does not matter, only the quality of your final result.
 
-Respond with a Node.js script. The script runs in the workspace root. Use relative paths or process.cwd().
+Respond with a Node.js script (no backticks, no commentary). The script runs in the workspace root.
 
-Examples of things you can do:
-- Explore: fs.readFileSync(), fs.readdirSync(), console.log() to understand the codebase
-- Modify: fs.writeFileSync(), fs.mkdirSync(), etc.
-- Run commands: child_process.execSync() or spawn
-
-Output ONLY the script (no backticks, no commentary).`;
+You can use fs, child_process, path, etc. Use console.log() to output information you need for the next iteration.`;
 			stream.progress('Thinking...');
 			const rawResponse = await sendModelRequest(request.model, agentPrompt, token, 'Agent iteration');
 			const sanitizedResponse = stripCodeFences(rawResponse);
@@ -76,7 +72,7 @@ Output ONLY the script (no backticks, no commentary).`;
 			const scriptSection = `<script>\n${truncatedCode}\n</script>`;
 			const scriptOutputSection = `<scriptOutput>\n${truncatedResult}\n</scriptOutput>`;
 
-			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. Compacted context for next iteration. CRITICAL: Be very conservative when summarizing. You must preserve ALL file contents that are still relevant for future steps. Do not summarize code if it might be needed later. It is better to keep too much context than too little. Remove only details that are clearly no longer needed (like intermediate script outputs that have been processed).\n2. A final summary for the user if the task is complete.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.`;
+			const notesPrompt = `${contextSummary}\n\nScript that just ran:\n${scriptSection}\n\nScript output summary:\n${scriptOutputSection}\n\nRespond with either:\n1. The full context for next iteration. Your response will be used as the starting context for the next iteration, anything else will be lost. If you omit information in response and that information is needed in the future, then you will need to re-query/calculate/produce this information again, this will hurt your ability to generate a high quality result so you don't want it to happen\n2. A final summary for the user if the task is complete.\n\nTo indicate a final summary, start your response with "FINAL:". Otherwise your response will be used as notes for the next iteration.`;
 			stream.progress('Updating memory...');
 			const notesResponse = await sendModelRequest(request.model, notesPrompt, token, 'Capture next-iteration memory or finalize');
 			const notesContent = notesResponse.trim();
